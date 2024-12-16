@@ -39,7 +39,7 @@ If you find the code helpful in your research or work, please cite the following
 3. NVIDIA GPU + CUDA
 ```
 
-# Usage:s
+# Usage:
 
 ```
 1. Run train.py for model training
