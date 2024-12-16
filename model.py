@@ -6,7 +6,8 @@ import numpy as np
 from typing import Optional
 import numpy as np
 from einops import rearrange, repeat
-from CA import *
+from CA import SE
+import math
 
 
 def drop_path_f(x, drop_prob: float = 0., training: bool = False):
@@ -40,8 +41,8 @@ class DropPath(nn.Module):
         return drop_path_f(x, self.drop_prob, self.training)
 
 
-#########################################
-########### window operation#############
+##########################################
+########### window operation #############
 def window_partition(x, window_size: int):
     """
     将feature map按照window_size划分成一个个没有重叠的window
@@ -130,12 +131,8 @@ class WindowAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
         self.weight_factor = torch.nn.Parameter(torch.tensor([0.2]), requires_grad=True)
-        # self.weight_factor = torch.nn.Parameter(torch.tensor([0.1]), requires_grad=False)
-        # self.ca_atten = SELayer1d(48)
         self.ca_atten = SE(48)
-        # self.ca_atten = CAMA(48)
-        # self.ca_atten = CABlock1d(48)
-        # self.ca_atten = CAB(48)
+
 
     def forward(self, x, mask: Optional[torch.Tensor] = None):
         """
@@ -147,8 +144,6 @@ class WindowAttention(nn.Module):
         B_, N, C = x.shape
 
         shortcut = x
-        # print('145_{}'.format(shortcut.shape))
-        # print('145_{}'.format(x.shape))
 
         # qkv(): -> [batch_size*num_windows, Mh*Mw, 3 * total_embed_dim]
         # reshape: -> [batch_size*num_windows, Mh*Mw, 3, num_heads, embed_dim_per_head]
@@ -186,19 +181,14 @@ class WindowAttention(nn.Module):
         # reshape: -> [batch_size*num_windows, Mh*Mw, total_embed_dim]
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
 
-        # print('183_{}'.format(x.shape))
-        # print(self.weight_factor)
-
         x = x + self.weight_factor * self.ca_atten(shortcut)
-
-        # print('187_{}'.format(x.shape))
 
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
 
 
-#########################################
+##############################################
 ########### feed-forward network #############
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
@@ -216,18 +206,11 @@ class Mlp(nn.Module):
 
     def forward(self, x):
 
-        # print('198:{}'.format(x.shape))
-
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop1(x)
-
-        # print('204:{}'.format(x.shape))
-
         x = self.fc2(x)
         x = self.drop2(x)
-
-        # print('209:{}'.format(x.shape))
 
         return x
 
@@ -249,18 +232,13 @@ class LeFF(nn.Module):
         # bs x hw x c
         bs, hw, c = x.size()
         hh = int(math.sqrt(hw))
-
         x = self.linear1(x)
-
         # spatial restore
         x = rearrange(x, ' b (h w) (c) -> b c h w ', h = hh, w = hh)
         # bs,hidden_dim,32x32
-
         x = self.dwconv(x)
-
         # flaten
         x = rearrange(x, ' b c h w -> b (h w) c', h = hh, w = hh)
-
         x = self.linear2(x)
         x = self.eca(x)
 
@@ -295,39 +273,8 @@ class eca_layer_1d(nn.Module):
         return x * y.expand_as(x)
 
 
-class FeedForward(nn.Module):
-    def __init__(self, dim, ffn_expansion_factor=2.66, bias=False):
-        super(FeedForward, self).__init__()
-
-        hidden_features = int(dim*ffn_expansion_factor)
-        # hidden_features = hidden_features
-
-        self.project_in = nn.Conv2d(dim, hidden_features*2, kernel_size=1, bias=bias)
-
-        self.dwconv = nn.Conv2d(hidden_features*2, hidden_features*2, kernel_size=3, stride=1, padding=1, groups=hidden_features*2, bias=bias)
-
-        self.project_out = nn.Conv2d(hidden_features, dim, kernel_size=1, bias=bias)
-
-    def forward(self, x):
-
-        bs, hw, c = x.size()
-        hh = int(math.sqrt(hw))
-        x = rearrange(x, ' b (h w) (c) -> b c h w ', h = hh, w = hh)
-
-        x = self.project_in(x)
-
-        x1, x2 = self.dwconv(x).chunk(2, dim=1)
-        x = F.gelu(x1) * x2
-
-        x = self.project_out(x)
-
-        x = rearrange(x, ' b c h w -> b (h w) c', h=hh, w=hh)
-
-        return x
-
-
-class SwinTransformerBlock(nn.Module):
-    r""" Swin Transformer Block.
+class SparseTransformerBlock(nn.Module):
+    r""" Sparse Transformer Block.
 
     Args:
         dim (int): Number of input channels.
@@ -363,23 +310,12 @@ class SwinTransformerBlock(nn.Module):
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
 
-        # self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
-
         if token_mlp in ['ffn', 'mlp']:
             self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
         elif token_mlp == 'leff':
             self.mlp = LeFF(dim, mlp_hidden_dim, act_layer=act_layer, drop=drop)
-        elif token_mlp == 'gdfn':
-            self.mlp = FeedForward(dim, ffn_expansion_factor=2.66)
         else:
             raise Exception("FFN error!")
-
-        # self.weight_factor = torch.nn.Parameter(torch.tensor([0.2]), requires_grad=True)
-        # self.weight_factor = torch.nn.Parameter(torch.tensor([0.1]), requires_grad=False)
-        # self.ca_atten = SELayer(48)
-        # self.ca_atten = CAB(48)
-        # self.ca_atten = CABlock(48)
-        # self.ca_atten = SE2d(48)
 
 
     def forward(self, x, attn_mask):
@@ -387,27 +323,16 @@ class SwinTransformerBlock(nn.Module):
         B, L, C = x.shape
         assert L == H * W, "input feature has wrong size"
 
-        # print(x.shape, attn_mask.shape)
-
-        # print('window', self.shift_size, self.window_size)
-
         shortcut = x
         x = self.norm1(x)
         x = x.view(B, H, W, C)
 
-        # cab = x
-
-        # print('410_{}'.format(x.shape))
-
         # pad feature maps to multiples of window size
-        # 把feature map给pad到window size的整数倍
         pad_l = pad_t = 0
         pad_r = (self.window_size - W % self.window_size) % self.window_size
         pad_b = (self.window_size - H % self.window_size) % self.window_size
         x = F.pad(x, (0, 0, pad_l, pad_r, pad_t, pad_b))
         _, Hp, Wp, _ = x.shape
-
-        # print('424_{}'.format(x.shape))
 
         # cyclic shift
         if self.shift_size > 0:
@@ -415,8 +340,6 @@ class SwinTransformerBlock(nn.Module):
         else:
             shifted_x = x
             attn_mask = None
-
-        # print(attn_mask)
 
         # partition windows
         x_windows = window_partition(shifted_x, self.window_size)  # [nW*B, Mh, Mw, C]
@@ -429,8 +352,6 @@ class SwinTransformerBlock(nn.Module):
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)  # [nW*B, Mh, Mw, C]
         shifted_x = window_reverse(attn_windows, self.window_size, Hp, Wp)  # [B, H', W', C]
 
-        # print("422_{}".format(shifted_x.shape))
-
         # reverse cyclic shift
         if self.shift_size > 0:
             x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
@@ -438,13 +359,7 @@ class SwinTransformerBlock(nn.Module):
             x = shifted_x
 
         if pad_r > 0 or pad_b > 0:
-            # 把前面pad的数据移除掉
             x = x[:, :H, :W, :].contiguous()
-
-        # print("434_{}".format(x.shape))
-        # print(self.weight_factor)
-
-        # x = x + self.weight_factor * self.ca_atten(cab)
 
         x = x.view(B, H * W, C)
 
@@ -457,7 +372,7 @@ class SwinTransformerBlock(nn.Module):
 
 class BasicLayer(nn.Module):
     """
-    A basic Swin Transformer layer for one stage.
+    A basic Sparse Transformer layer for one stage.
 
     Args:
         dim (int): Number of input channels.
@@ -487,7 +402,7 @@ class BasicLayer(nn.Module):
         # build blocks
         if shift_flag:
             self.blocks = nn.ModuleList([
-                SwinTransformerBlock(
+                SparseTransformerBlock(
                     dim=dim,
                     num_heads=num_heads,
                     window_size=window_size,
@@ -501,7 +416,7 @@ class BasicLayer(nn.Module):
                 for i in range(depth)])
         else:
             self.blocks = nn.ModuleList([
-                SwinTransformerBlock(
+                SparseTransformerBlock(
                     dim=dim,
                     num_heads=num_heads,
                     window_size=window_size,
@@ -521,11 +436,10 @@ class BasicLayer(nn.Module):
             self.downsample = None
 
     def create_mask(self, x, H, W):
-        # calculate attention mask for SW-MSA
-        # 保证Hp和Wp是window_size的整数倍
+
         Hp = int(np.ceil(H / self.window_size)) * self.window_size
         Wp = int(np.ceil(W / self.window_size)) * self.window_size
-        # 拥有和feature map一样的通道排列顺序，方便后续window_partition
+
         img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)  # [1, Hp, Wp, 1]
         h_slices = (slice(0, -self.window_size),
                     slice(-self.window_size, -self.shift_size),
@@ -548,12 +462,8 @@ class BasicLayer(nn.Module):
 
     def forward(self, x, H, W):
 
-        # print(self.shift_size, self.window_size,  x.shape)
-
         res = x
         attn_mask = self.create_mask(x, H, W)  # [nW, Mh*Mw, Mh*Mw]
-
-        # print(attn_mask, attn_mask.shape)
 
         for blk in self.blocks:
             blk.H, blk.W = H, W
@@ -568,8 +478,6 @@ class BasicLayer(nn.Module):
         out = res + x
 
         return out, H, W
-        # return out
-
 
 class SEST(nn.Module):
     def __init__(self):
@@ -579,25 +487,12 @@ class SEST(nn.Module):
         depth = 6
         token_mlp = 'leff'
         shift_flag = False
-        # depth = 8
 
-        # self.SF = nn.Conv2d(num_channel, num_feature, 3, 1, 1)
         self.SF = nn.Conv2d(num_channel+3, num_feature, 3, 1, 1)
-
-        # self.Embedding = nn.Sequential(
-        #     nn.Linear(num_channel+3, num_feature),
-        # )
 
         self.trans2 = BasicLayer(dim=num_feature, depth=depth, num_heads=3, window_size=8, mlp_ratio=4, token_mlp=token_mlp, shift_flag=shift_flag)
         self.trans4 = BasicLayer(dim=num_feature, depth=depth, num_heads=3, window_size=16, mlp_ratio=4, token_mlp=token_mlp, shift_flag=shift_flag)
         self.trans8 = BasicLayer(dim=num_feature, depth=depth, num_heads=3, window_size=32, mlp_ratio=4, token_mlp=token_mlp, shift_flag=shift_flag)
-        # 单窗口
-        # self.trans = BasicLayer(dim=num_feature, depth=depth, num_heads=3, window_size=20, mlp_ratio=4, token_mlp=token_mlp, shift_flag=shift_flag)
-
-        # self.re = nn.Sequential(
-        #     nn.Conv2d(3*num_feature, num_feature, 3, 1, 1),
-        #     nn.LeakyReLU()
-        # )
 
         self.refine = nn.Sequential(
             nn.Conv2d(num_feature, num_feature, 3, 1, 1),
@@ -605,112 +500,27 @@ class SEST(nn.Module):
             nn.Conv2d(num_feature, num_channel, 3, 1, 1)
         )
 
-        # self.ca_attn = ChannelAttention(31)
-
-        # self.weight_factor = torch.nn.Parameter(torch.tensor([0.33, 0.33, 0.33]), requires_grad=True)
-
     def forward(self, HSI, MSI):
-        # ca = self.ca_attn(HSI)
-        # print(np.shape(ca))
-        # R = 26
-        # G = 14
-        # B = 6
 
         UP_LRHSI = F.interpolate(HSI,scale_factor=4, mode='bicubic') ### (b N h w)
-        # ca = self.ca_attn(UP_LRHSI)
         UP_LRHSI = UP_LRHSI.clamp_(0, 1)
-        # print(np.shape(UP_LRHSI))
         sz = UP_LRHSI.size(2)
-        # HSI与MSI的融合
         Data = torch.cat((UP_LRHSI,MSI),1)
 
-        # HSI与MSI的分通道融合
-        # Data = torch.zeros(UP_LRHSI.size(0), UP_LRHSI.size(1) + MSI.size(1), UP_LRHSI.size(2), UP_LRHSI.size(2)).cuda()
-        # # 将RGB图像分波段融入LR-HSI
-        # Data[:, 0:B, :, :] = UP_LRHSI[:, 0:B, :, :]
-        # Data[:, B+1, :, :] = MSI[:, 2, :, :]  # B波段
-        # Data[:, B+2:G+1, :, :] = UP_LRHSI[:, B+1:G, :, :]
-        # Data[:, G+2, :, :] = MSI[:, 1, :, :]  # G波段
-        # Data[:, G+3:R+2, :, :] = UP_LRHSI[:, G+1:R, :, :]
-        # Data[:, R+3, :, :] = MSI[:, 0, :, :]  # R波段
-        # Data[:, R+4:-1, :, :] = UP_LRHSI[:, R+1:-1, :, :]
-
-        # SF = self.SF(UP_LRHSI)
         SF = self.SF(Data)
-        # print(np.shape(SF))
         E = rearrange(SF, 'B c H W -> B (H W) c', H = sz)
 
-        # E = rearrange(Data, 'B c H W -> B (H W) c', H = sz)
-        # print(np.shape(E))
-        # E = self.Embedding(E)
-        # print(np.shape(E))
-
-        # 分组式多尺度
         Highpass2, _, _ = self.trans2(E, sz, sz)
         Highpass4, _, _ = self.trans4(E, sz, sz)
         Highpass8, _, _ = self.trans8(E, sz, sz)
-        # 单窗口
-        # Highpass_win, _, _ = self.trans(E, sz, sz)
-
-        # 级联多尺度 -> 效果很差，不收敛
-        # Highpass2 = self.trans8(E, sz, sz) + E
-        # Highpass4 = self.trans4(Highpass2, sz, sz) + E
-        # Highpass8 = self.trans2(Highpass4, sz, sz) + E
-
-        # Highpass = Highpass8
-
-        # 特征融合
-        # Highpass = (Highpass2 + Highpass4 + Highpass8) / 3
-        # Highpass = Highpass2 + E
-        # Highpass = Highpass4 + E
-        # Highpass = Highpass8 + E
-        # 单窗口
-        # Highpass = Highpass_win + E
 
         Highpass = (Highpass2 + Highpass4 + Highpass8) / 3 + E
-        # print(self.weight_factor)
-        # Highpass = self.weight_factor[0] * Highpass2 + self.weight_factor[1] * Highpass4 + self.weight_factor[2] * Highpass8 + E
-
 
         Highpass = rearrange(Highpass,'B (H W) C -> B C H W', H = sz)
-
         Highpass = self.refine(Highpass)
 
-
-        # 原本的
-        # output = Highpass + UP_LRHSI
-        # output = output * ca
-
-        # output = Highpass + UP_LRHSI + UP_LRHSI * ca
-
-        # output = Highpass * ca  # 去掉残差学习
-        # output = Highpass  + UP_LRHSI  # 去掉通道注意力
-        # output = Highpass * ca + UP_LRHSI
-
         output = Highpass + UP_LRHSI
-
 
         output = output.clamp_(0, 1)
 
         return output, UP_LRHSI, Highpass
-
-
-if __name__ == '__main__':
-    # model = BasicLayer(dim=48, depth=2, num_heads=3, window_size=8, mlp_ratio=1)
-    # x = torch.randn(3, 4096, 48)
-    # y, _, _ = model(x, 64, 64)
-    # print(np.shape(y))
-    model = SEST().cuda()
-    # model = SEST()
-    # print(model)
-    LRHSI = torch.randn(3, 31, 16, 16).cuda()
-    HRMSI = torch.randn(3, 3, 64, 64).cuda()
-    HRHSI = torch.randn(3, 31, 64, 64).cuda()
-    output_HRHSI, UP_LRHSI, Highpass = model(LRHSI, HRMSI)
-    print('output_HRHSI:{}, UP_LRHSI:{}, Highpass:{}'.format(output_HRHSI.size(), UP_LRHSI.size(), Highpass.size()))
-    # print(model.state_dict())
-    print('Start training...')
-    total = sum([param.nelement() for param in model.parameters()])
-    print("Number of parameter: %.2fM" % (total / 1e6))
-
-
