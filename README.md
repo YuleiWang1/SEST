@@ -43,6 +43,6 @@ If you find the code helpful in your research or work, please cite the following
 
 ```
 1. Run train.py for model training
-2. Run test.py for super-resolution reconstruc
+2. Run test.py for super-resolution reconstruct
 ```
 
