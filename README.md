@@ -4,9 +4,9 @@
 
 Paper web page: [Spectral-Enhanced Sparse Transformer Network for Hyperspectral Super-Resolution Reconstruction](https://ieeexplore.ieee.org/abstract/document/10675340).
 
-![SEST](SEST.png)
+![SEST](figure/SEST.png)
 
-# ![SMSA](SMSA.png)
+![SEST](figure/SMSA.png)
 
 # Abstract:
 
@@ -39,10 +39,10 @@ If you find the code helpful in your research or work, please cite the following
 3. NVIDIA GPU + CUDA
 ```
 
-# Usage:
+# Usage:s
 
 ```
 1. Run train.py for model training
-2. Run test.py for super-resolution reconstruct
+2. Run test.py for super-resolution reconstruction
 ```
 
